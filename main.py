@@ -21,7 +21,7 @@ def create_image(width, height):
     dc.ellipse((0, 0, width, height), fill=(0, 0, 255))
     return image
 
-# Функция для получения PID Яндекс Музыки
+
 def get_yandex_music_pids():
     pids = []
     for proc in psutil.process_iter(['pid', 'name']):
@@ -29,7 +29,6 @@ def get_yandex_music_pids():
             pids.append(proc.info['pid'])
     return pids
 
-# Функция для проверки памяти процесса на наличие последовательности
 def check_memory_for_sequence(pid):
     nameLen = getMmusicLen(pid)
     
@@ -39,7 +38,7 @@ def check_memory_for_sequence(pid):
     try:
         actorNameLen = getActorNameLen(pid)
     except Exception as e:
-        print(e)
+        print("actorNameLen: " + e)
         actorNameLen = 25
 
     if nameLen > 0:
@@ -47,12 +46,36 @@ def check_memory_for_sequence(pid):
         try:
             actorName = getActorName(pid, actorNameLen)
         except Exception as e:
-            print(e)
+            print("actorName: " + e)
             actorName = "Unknown"
 
+        try:
+            pause = getPausedInfo(pid)
+        except Exception as e:
+            print("pause: " + e)
+            pause = ""
+
         musicName = getMusicName(pid, nameLen)
-        print(actorName + " - " + musicName)
+        print(pause + " " + actorName + " - " + musicName)
         return True
+
+def getPausedInfo(pid):
+    pm  = pymem.Pymem(pid)
+    PauseOffsets = [0x10,0x48,0x68,0x68,0x38,0x10,0x2CC]
+    base_address = pm.base_address+0x09FC1AE8
+    pause=RemotePointer(pm.process_handle, base_address)
+    if pause.value==0:
+        return False
+    for PauseOffset in PauseOffsets:
+        if PauseOffset==PauseOffsets[-1]:
+            pause=pause.value+PauseOffsets[-1]
+            break
+        pause=RemotePointer(pm.process_handle, pause.value+PauseOffset)
+
+    if pm.read_int(pause)==3:
+        return "▶️ "
+    else:
+        return "⏸️ "
 
 def getActorNameLen(pid):
     pm  = pymem.Pymem(pid)
