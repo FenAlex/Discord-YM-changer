@@ -8,11 +8,22 @@ import pymem
 import pymem.process
 from pymem.ptypes import RemotePointer
 import re
+import threading
+import time
+import discord
+import asyncio
+from config import TOKEN
 
 # Константы
 TARGET_PROCESS_NAME = "Яндекс Музыка.exe"
 # SEQUENCE_TO_CHECK = bytes([0x46, 0x00, 0x4C, 0x00, 0x41, 0x00, 0x4D, 0x00, 0x4D, 0x00, 0x41]) 
 SEQUENCE_TO_CHECK = rb"\x46\x00\x4C\x00\x41\x00\x4D\x00\x4D\x00\x41" # Заданная последовательность
+
+# Глобавьные переменные
+pids = []
+stop_thread = False
+program_pause = False
+music_info = "Яндекс Музыка"
 
 # Функция для создания иконки
 def create_image(width, height):
@@ -34,30 +45,23 @@ def check_memory_for_sequence(pid):
     
     if nameLen == False or nameLen == 0:
         return False
-    
-    try:
-        actorNameLen = getActorNameLen(pid)
-    except Exception as e:
-        print("actorNameLen: " + e)
-        actorNameLen = 25
 
     if nameLen > 0:
 
         try:
-            actorName = getActorName(pid, actorNameLen)
+            actorName = getActorName(pid, 25)
         except Exception as e:
-            print("actorName: " + e)
+            print("actorName: " + str(e))
             actorName = "Unknown"
 
         try:
             pause = getPausedInfo(pid)
         except Exception as e:
-            print("pause: " + e)
+            print("pause: " + str(e))
             pause = ""
 
         musicName = getMusicName(pid, nameLen)
-        print(pause + " " + actorName + " - " + musicName)
-        return True
+        return pause + " " + actorName + " - " + musicName
 
 def getPausedInfo(pid):
     pm  = pymem.Pymem(pid)
@@ -77,20 +81,6 @@ def getPausedInfo(pid):
     else:
         return "⏸️ "
 
-def getActorNameLen(pid):
-    pm  = pymem.Pymem(pid)
-    NameLenOffsets = [0x108,0x38,0x2C0,0x50,0x28,0x1F0]
-    base_address = pm.base_address+0x09F5B198
-    nameLen=RemotePointer(pm.process_handle, base_address)
-    if nameLen.value==0:
-        return False
-    for NameLenOffset in NameLenOffsets:
-        if NameLenOffset==NameLenOffsets[-1]:
-            nameLen=nameLen.value+NameLenOffsets[-1]
-            break
-        nameLen=RemotePointer(pm.process_handle, nameLen.value+NameLenOffset)
-    return pm.read_int(nameLen)
-
 def getActorName(pid, nameLen = 25):
     pm  = pymem.Pymem(pid)
     ActorNameOffsets = [0x8,0x90,0x28,0x48,0x10,0x1A8,0x0]
@@ -105,7 +95,18 @@ def getActorName(pid, nameLen = 25):
         actorName=RemotePointer(pm.process_handle, actorName.value+ActorNameOffset)
     
     temp = b'' + pm.read_bytes(actorName, nameLen * 2)
-    return(temp.decode("utf-16").rstrip('\x00'))
+    null_index = temp.find(b'\x00\x00')
+
+    if null_index != -1:
+        temp1 = temp[:null_index]
+        temp2 = temp[:null_index+1]
+    
+    try:
+        temp = temp1.decode("utf-16").rstrip('\x00')
+    except:
+        temp = temp2.decode("utf-16").rstrip('\x00')
+
+    return(temp)
 
 def getMmusicLen(pid):
     pm  = pymem.Pymem(pid)
@@ -140,26 +141,93 @@ def getMusicName(pid, nameLen):
     return(temp.decode("utf-16").rstrip('\x00'))
 
 # Функция для обновления информации о PID
-def update_pid(icon):
-    pids = get_yandex_music_pids()
-    count = len(pids)
-    icon.title = f"Discord менеджер: {count} Яндекс Музыка"
-    
-    # Проверяем память каждого PID на наличие последовательности
-    for pid in pids:
-        if check_memory_for_sequence(pid):
-            print(f"Последовательность найдена в процессе с PID: {pid:08X}")
+def update(icon):
+    while not stop_thread:
+        global program_pause
+        if program_pause:
+            continue
 
-# Функция выхода из программы
+        pids = get_yandex_music_pids()
+        icon.title = f"Discord менеджер"
+        
+        for pid in pids:
+            temp = check_memory_for_sequence(pid)
+            if temp:
+                global music_info
+                if music_info != temp:
+                    music_info = temp
+
+                    new_menu_item_music = MenuItem(music_info, history_action)
+                    new_menu_item = MenuItem("Возобновить" if program_pause else "Пауза", pause_action)
+
+                    icon.menu = (
+                        new_menu_item_music,
+                        new_menu_item,
+                        MenuItem("Закрыть программу", exit_action),
+                    )
+
+
+        time.sleep(5)
+    
+def pause_action(icon, item):
+    global program_pause
+    program_pause = not program_pause
+
+    # Create a new menu item based on the current state
+    new_menu_item = MenuItem("Возобновить" if program_pause else "Пауза", pause_action)
+
+    # Update the icon's menu with a new Menu object
+    icon.menu = (
+        MenuItem("Яндекс Музыка", history_action),
+        new_menu_item,
+        MenuItem("Закрыть программу", exit_action),
+    )
+
+
+
 def exit_action(icon, item):
+    global stop_thread
+    stop_thread = True
     icon.stop()
+
+def history_action(icon, item):
+    pass
+
+class MyClient(discord.Client):
+    async def on_ready(self):
+        print(f'Logged on as {self.user}!')
+        self.change_status_task = self.loop.create_task(self.change_status())
+
+    async def change_status(self):
+        global program_pause
+        global music_info
+        global stop_thread
+        actual_music_info = ""
+        while not stop_thread:
+            # print("Информация об активности: " + music_info)
+            # print("Акутальная информация об активности: " + actual_music_info)
+            if not program_pause:
+                if music_info != actual_music_info:
+                    actual_music_info = music_info
+                    await self.change_presence(activity=discord.Game(music_info))
+                    
+            await asyncio.sleep(5)
+
+def run_discord_client():
+    client = MyClient()
+    client.run(TOKEN)
 
 # Основная функция
 def main():
     icon = Icon("test_icon", create_image(64, 64), title="Discord менеджер", menu=(
-        MenuItem("Яндекс Музыка: 0", update_pid),
+        MenuItem("Яндекс Музыка", history_action),
+        MenuItem("Пауза", pause_action),
         MenuItem("Закрыть программу", exit_action),
     ))
+
+    threading.Thread(target=update, args=(icon,)).start()
+    threading.Thread(target=run_discord_client).start()
+
     
     icon.run()
 
